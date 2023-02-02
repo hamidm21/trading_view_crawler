@@ -13,6 +13,7 @@ import pytz
 class TradingView:
     def __init__(self, coin):
         self.coin = coin
+        self._closed_candles = []
         self.headers = json.dumps({'Origin': 'https://data.tradingview.com'})
         self.ws = websocket.WebSocketApp("wss://data.tradingview.com/socket.io/websocket",
                                          on_open=self._on_open,
@@ -25,6 +26,17 @@ class TradingView:
         self.do(symbol="binance:{}".format(coin), since=1)
         rel.signal(2, rel.abort)  # Keyboard Interrupt
         rel.dispatch()
+
+    @property
+    def closed_candles(self):
+        return self._closed_candles
+    
+    @closed_candles.setter
+    def closed_candles(self, candle):
+        self._closed_candles.append(candle)
+        self._closed_candles = self._closed_candles[-2:]
+        print(self._closed_candles)
+        return self._closed_candles
 
     # WEBSOCKET FUNCTIONS
     def _on_message(self, ws, message):
