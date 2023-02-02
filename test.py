@@ -43,7 +43,7 @@ symbols = [
 ]
 
 for coin in symbols:
-    TV = TradingView()
+    TV = TradingView("BTCUSDT")
 
 # def printit():
 #   threading.Timer(5, printit).start()
