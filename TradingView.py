@@ -1,19 +1,32 @@
-import websocket
-import _thread
-import time
-import rel
+import threading
+import datetime
 import json
 import random
-import string
 import re
-import datetime
+import string
+import sys
+import time
+
+# import logging
+from loguru import logger 
 import pytz
+import websocket
+
+# from .logger import logger
+# from test import symbols
+
+# format = "%(asctime)s: %(message)s\n_______"
+# logging.basicConfig(format=format, level=logging.INFO,
+#                     datefmt="%H:%M:%S")
 
 
 class TradingView:
-    def __init__(self, coin):
-        self.coin = coin
+    def __init__(self, symbols, worker_id):
+        self.symbols = symbols
+        self.worker_id = worker_id
+        self.logger = logger
         self._closed_candles = []
+        self._subscribed_coins = []
         self.headers = json.dumps({'Origin': 'https://data.tradingview.com'})
         self.ws = websocket.WebSocketApp("wss://data.tradingview.com/socket.io/websocket",
                                          on_open=self._on_open,
@@ -21,63 +34,84 @@ class TradingView:
                                          on_error=self._on_error,
                                          on_close=self._on_close,
                                          header=self.headers)
-        # Set dispatcher to automatic reconnection, 5 second reconnect delay if connection closed unexpectedly
-        self.ws.run_forever(dispatcher=rel, reconnect=5)
-        self.do(symbol="binance:{}".format(coin), since=1)
-        rel.signal(2, rel.abort)  # Keyboard Interrupt
-        rel.dispatch()
-
+        self.logger.debug("Initializing Crawler {}".format(worker_id))
+        self.ws.run_forever()
     @property
     def closed_candles(self):
         return self._closed_candles
-    
+
     @closed_candles.setter
     def closed_candles(self, candle):
         self._closed_candles.append(candle)
         self._closed_candles = self._closed_candles[-2:]
-        print(self._closed_candles)
+        print("closed candle {}".format(self._closed_candles))
         return self._closed_candles
 
     # WEBSOCKET FUNCTIONS
     def _on_message(self, ws, message):
+        pattern = re.compile("~m~\d+~m~~h~\d+$")
+        if pattern.match(message):
+            ws.send(message)
+            self.logger.info("stay alive message -> {}".format(message))
+        # a=a+message+"\n"
+
+        # self.logger.info("new message")
         a = ""
         a = a + message + "\n"
-        initial_message = re.search(r'^(~m~92~m~)', a)
-        if initial_message:
-            bar_close_time = re.search(r'(?<=bar_close_time":)(\w+)', a)
-            print(bar_close_time)
-
-        str = re.search('"s":\[(.+?)\}\]', a)
-        if str is not None:
-            # coin = re.search(r'(?<=\bname":")(\w+)', a)
-            out = str.group(1)
-            x = out.split(',{\"')
-            for xi in x:
-                xi = re.split('\[|:|,|\]', xi)
-                # ts = datetime.datetime.fromtimestamp(float(xi[4]), tz=pytz.UTC).strftime("%Y/%m/%d, %H:%M:%S")
-                results = {
-                    'currency': self.coin,
-                    'time': xi[4],
-                    'open': xi[5],
-                    'high': xi[6],
-                    'low': xi[7],
-                    'close': xi[8],
-                    'volume': xi[9]
+        unique_id_of_the_coin = re.search(r'(?<="p":\[")(\w+)', a)
+        short_name = re.search(r'(?<=n":")(\w+)', a)
+        if unique_id_of_the_coin and short_name:
+            if short_name[0] in self.symbols:
+                new_coin = {
+                    "id": unique_id_of_the_coin[0],
+                    "name": short_name[0]
                 }
-            print(
-                "\n ++++++++ message ++++++++ \n {} \n ++++++++ message ++++++++ \n".format(results))
+                if new_coin not in self._subscribed_coins:
+                    old = []
+                    [old.append(idx) if coin["name"] == new_coin["name"] else None for idx ,coin in enumerate(self._subscribed_coins)]
+                    if old:
+                        self._subscribed_coins[old[0]] = new_coin
+                    else:
+                        self._subscribed_coins.append(new_coin)
+                    self.logger.debug("{}, len:{}, worker-id: {}".format(new_coin ,len(self._subscribed_coins), self.worker_id))
+        
+        # self._subscribed_coins.append(new_coin)
+        # if
+        # str = re.search('"s":\[(.+?)\}\]', a)
+        # if str is not None:
+        #     # coin = re.search(r'(?<=\bname":")(\w+)', a)
+        #     out = str.group(1)
+        #     x = out.split(',{\"')
+        #     for xi in x:
+        #         xi = re.split('\[|:|,|\]', xi)
+        #         # ts = datetime.datetime.fromtimestamp(float(xi[4]), tz=pytz.UTC).strftime("%Y/%m/%d, %H:%M:%S")
+        #         results = {
+        #             'currency': self.coin,
+        #             'time': xi[4],
+        #             'open': xi[5],
+        #             'high': xi[6],
+        #             'low': xi[7],
+        #             'close': xi[8],
+        #             'volume': xi[9]
+        #         }
+        #     logging.info()
 
     def _on_error(self, ws, error):
         print("Error--------------> {}".format(error))
 
     def _on_close(self, ws, close_status_code, close_msg):
-        print("### closed ###")
+        print(close_msg, close_status_code)
+        print("### closed")
 
     def _on_open(self, ws):
         print("Opened connection\n")
+        # while True:
+        for coin in self.symbols[:39]:
+            self._send(coin, 1)
+            # time.sleep(10)
+            # thread.Thread()
 
-    def do(self, symbol, since: int):
-        print('just doing things')
+    def _send(self, symbol, since: int):
         session = self.generateSession()
         chart_session = self.generateChartSession()
         self.sendMessage(self.ws, "set_auth_token", [
