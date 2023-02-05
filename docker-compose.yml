@@ -3,6 +3,7 @@ version: '3.3'
 services:
   crawler:
     build: .
+    tty: true
     environment:
       DEBUG_COLORS: "true"
       TERM: xterm-256color
