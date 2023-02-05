@@ -6,27 +6,23 @@ import re
 import string
 import sys
 import time
+import csv
+import os
 
 # import logging
-from loguru import logger 
+from loguru import logger
 import pytz
 import websocket
-
-# from .logger import logger
-# from test import symbols
-
-# format = "%(asctime)s: %(message)s\n_______"
-# logging.basicConfig(format=format, level=logging.INFO,
-#                     datefmt="%H:%M:%S")
 
 
 class TradingView:
     def __init__(self, symbols, worker_id):
+        self.time = None
         self.symbols = symbols
         self.worker_id = worker_id
         self.logger = logger
-        self._closed_candles = []
-        self._subscribed_coins = []
+        self._closed_candles = [{"symbol": symbol, "chart_session": None, "time": None,
+                                 "qoute_session": None, "data": [], "tickers":[]} for symbol in symbols]
         self.headers = json.dumps({'Origin': 'https://data.tradingview.com'})
         self.ws = websocket.WebSocketApp("wss://data.tradingview.com/socket.io/websocket",
                                          on_open=self._on_open,
@@ -36,65 +32,69 @@ class TradingView:
                                          header=self.headers)
         self.logger.debug("Initializing Crawler {}".format(worker_id))
         self.ws.run_forever()
-    @property
-    def closed_candles(self):
-        return self._closed_candles
-
-    @closed_candles.setter
-    def closed_candles(self, candle):
-        self._closed_candles.append(candle)
-        self._closed_candles = self._closed_candles[-2:]
-        print("closed candle {}".format(self._closed_candles))
-        return self._closed_candles
 
     # WEBSOCKET FUNCTIONS
     def _on_message(self, ws, message):
-        pattern = re.compile("~m~\d+~m~~h~\d+$")
-        if pattern.match(message):
-            ws.send(message)
-            self.logger.info("stay alive message -> {}".format(message))
-        # a=a+message+"\n"
-
-        # self.logger.info("new message")
+        self._check_stay_alive(message)
         a = ""
-        a = a + message + "\n"
-        unique_id_of_the_coin = re.search(r'(?<="p":\[")(\w+)', a)
-        short_name = re.search(r'(?<=n":")(\w+)', a)
-        if unique_id_of_the_coin and short_name:
-            if short_name[0] in self.symbols:
-                new_coin = {
-                    "id": unique_id_of_the_coin[0],
-                    "name": short_name[0]
-                }
-                if new_coin not in self._subscribed_coins:
-                    old = []
-                    [old.append(idx) if coin["name"] == new_coin["name"] else None for idx ,coin in enumerate(self._subscribed_coins)]
-                    if old:
-                        self._subscribed_coins[old[0]] = new_coin
-                    else:
-                        self._subscribed_coins.append(new_coin)
-                    self.logger.debug("{}, len:{}, worker-id: {}".format(new_coin ,len(self._subscribed_coins), self.worker_id))
-        
-        # self._subscribed_coins.append(new_coin)
-        # if
-        # str = re.search('"s":\[(.+?)\}\]', a)
-        # if str is not None:
-        #     # coin = re.search(r'(?<=\bname":")(\w+)', a)
-        #     out = str.group(1)
-        #     x = out.split(',{\"')
-        #     for xi in x:
-        #         xi = re.split('\[|:|,|\]', xi)
-        #         # ts = datetime.datetime.fromtimestamp(float(xi[4]), tz=pytz.UTC).strftime("%Y/%m/%d, %H:%M:%S")
-        #         results = {
-        #             'currency': self.coin,
-        #             'time': xi[4],
-        #             'open': xi[5],
-        #             'high': xi[6],
-        #             'low': xi[7],
-        #             'close': xi[8],
-        #             'volume': xi[9]
-        #         }
-        #     logging.info()
+        a = a+message+"\n"
+        str = re.search(r'"p":\["(\w+)",\{(.+?)\}\]', a)
+        if str is not None:
+            symbol = None
+            unique_id = re.search(r'(?<="p":\[")(\w+)', str[0])
+            if unique_id is not None:
+                for idx, candle in enumerate(self._closed_candles):
+                    if candle["chart_session"] == unique_id[0]:
+                        current_candle = self._closed_candles[idx]
+                        symbol = current_candle["symbol"]
+                        break
+                if symbol is not None:
+                    str = re.search(r'"s":\[(.+?)\}\]', str[0])
+                    if str is not None:
+                        out = str.group(1)
+                        x = out.split(',{\"')
+                        for xi in x:
+                            xi = re.split('\[|:|,|\]', xi)
+                            ts = datetime.datetime.fromtimestamp(
+                                float(xi[4]), tz=pytz.UTC).strftime("%Y/%m/%d, %H:%M:%S")
+                            results = {
+                                'currency': symbol,
+                                'time': xi[4],
+                                'open': xi[5],
+                                'high': xi[6],
+                                'low': xi[7],
+                                'close': xi[8],
+                                'volume': xi[9],
+                            }
+                            if not current_candle["time"]:
+                                current_candle["time"] = ts
+                            elif current_candle["time"] != ts:
+                                if current_candle["tickers"]:
+                                    current_candle["data"].append(
+                                        current_candle["tickers"][-1])
+                                    current_candle["tickers"] = []
+                                    current_candle["data"] = current_candle["data"][-100:]
+                                    current_candle["time"] = ts
+                                    self._write_to_csv(
+                                        "./data/{}/1m.csv".format(current_candle["symbol"]), [item[1] for item in current_candle["data"][-1].items()])
+                                    self.logger.debug(
+                                        current_candle["data"][-1])
+                            elif current_candle["time"] == ts:
+                                current_candle["tickers"].append(
+                                    results)
+
+    def _get_last_tickers(self):
+        return [candle["data"][-1] if candle["data"] else None for candle in self._closed_candles]
+
+    @staticmethod
+    def __create_directory(path: str):
+        dirname = os.path.dirname(path)
+        tokens = dirname.split('/')
+        dirs = ['/'.join(tokens[:index + 1])
+                for index in range(1, len(tokens))]
+        for parent_dir in dirs:
+            if not os.path.exists(parent_dir):
+                os.mkdir(parent_dir)
 
     def _on_error(self, ws, error):
         print("Error--------------> {}".format(error))
@@ -103,15 +103,35 @@ class TradingView:
         print(close_msg, close_status_code)
         print("### closed")
 
-    def _on_open(self, ws):
-        print("Opened connection\n")
-        # while True:
-        for coin in self.symbols[:39]:
-            self._send(coin, 1)
-            # time.sleep(10)
-            # thread.Thread()
+    def _write_to_csv(self, addr, content):
+        self.__create_directory(addr)
+        exists = os.path.isfile(addr)
+        with open(addr, 'a', newline='') as file:
+            writer = csv.writer(file, delimiter=',',
+                                quotechar='"', quoting=csv.QUOTE_MINIMAL)
+            print(exists)
+            if not exists:
+                writer.writerow([
+                    'currency',
+                    'time',
+                    'open',
+                    'high',
+                    'low',
+                    'close',
+                    'volume'])
+            writer.writerow(content)
 
-    def _send(self, symbol, since: int):
+    def _on_open(self, ws):
+        for coin in self.symbols[:39]:
+            self.logger.info("start crawling {}".format(coin))
+            self._send(coin, 1)
+
+    def _check_stay_alive(self, message):
+        pattern = re.compile("~m~\d+~m~~h~\d+$")
+        if pattern.match(message):
+            self.ws.send(message)
+
+    def _send(self, symbol: str, since: int):
         session = self.generateSession()
         chart_session = self.generateChartSession()
         self.sendMessage(self.ws, "set_auth_token", [
@@ -135,6 +155,12 @@ class TradingView:
                           "=" + message])
         self.sendMessage(self.ws, "create_series", [
                          chart_session, "s1", "s1", "symbol_1", "1", since])
+
+        for idx, symb in enumerate(self._closed_candles):
+            if symb["symbol"] == symbol:
+                self._closed_candles[idx]["chart_session"] = chart_session
+                self._closed_candles[idx]["qoute_session"] = session
+                break
 
     def generateSession(self):
         string_length = 12
