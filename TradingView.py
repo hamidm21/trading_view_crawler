@@ -109,7 +109,6 @@ class TradingView:
         with open(addr, 'a', newline='') as file:
             writer = csv.writer(file, delimiter=',',
                                 quotechar='"', quoting=csv.QUOTE_MINIMAL)
-            print(exists)
             if not exists:
                 writer.writerow([
                     'currency',
