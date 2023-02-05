@@ -1,18 +1,18 @@
-import threading
+import csv
 import datetime
 import json
+import os
 import random
 import re
 import string
 import sys
+import threading
 import time
-import csv
-import os
 
-# import logging
-from loguru import logger
 import pytz
 import websocket
+# import logging
+from loguru import logger
 
 
 class TradingView:
